@@ -45,7 +45,7 @@ load_dotenv()
 logging.basicConfig(
     level=logging.INFO,
     format='{"time":"%(asctime)s", "level":"%(levelname)s", "name":"%(name)s", "message":"%(message)s"}',
-)s [%(levelname)s] %(name)s: %(message)s")
+)
 logger = logging.getLogger("datafast-mcp")
 
 # Producción: https://eu-prod.oppwa.com  |  Sandbox: https://eu-test.oppwa.com
