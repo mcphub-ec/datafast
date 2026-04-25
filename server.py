@@ -29,6 +29,8 @@ Fuente de verdad técnica: docs/openapi.yaml
 import os
 import json
 import logging
+from decimal import ROUND_HALF_UP, Decimal
+from enum import Enum
 from typing import Any
 
 from dotenv import load_dotenv
@@ -36,6 +38,87 @@ import httpx
 from mcp.server.fastmcp import FastMCP
 
 load_dotenv()
+
+
+# ---------------------------------------------------------------------------
+# Motor fiscal determinista — IVA Ecuador (Datafast / Oppwa)
+# ---------------------------------------------------------------------------
+# El LLM NUNCA calcula impuestos. Solo pasa `monto` + `tipo_monto`.
+# Datafast exige strings con 2 decimales y que:
+#   amount == subtotal_iva0 + subtotal_gravado + valor_iva + valor_ice
+# El incumplimiento de esa suma causa el error 100.400.500.
+# ---------------------------------------------------------------------------
+
+class TipoMonto(str, Enum):
+    """Indica si el monto dado por el usuario incluye IVA o es la base imponible."""
+    SUBTOTAL      = "subtotal"       # el usuario dio la base SIN IVA  (default)
+    TOTAL_CON_IVA = "total_con_iva"  # el usuario dio el total CON IVA incluido
+
+
+_TWO = Decimal("0.01")
+
+
+def _iva_rate() -> Decimal:
+    """Lee IVA_EC_PERCENTAGE del entorno. Fallback: 0.15 (15%)."""
+    raw = os.environ.get("IVA_EC_PERCENTAGE", "0.15")
+    try:
+        rate = Decimal(raw)
+        if not (Decimal(0) < rate <= Decimal(1)):
+            raise ValueError()
+        return rate
+    except Exception:
+        raise ValueError(
+            f"IVA_EC_PERCENTAGE inválido: {raw!r}. "
+            "Debe ser un decimal entre 0 y 1, ej. '0.15' para 15%."
+        )
+
+
+def _r2(v: Decimal) -> Decimal:
+    """Redondeo estricto a 2 decimales (ROUND_HALF_UP)."""
+    return v.quantize(_TWO, rounding=ROUND_HALF_UP)
+
+
+def _calcular_strings_fiscales(
+    monto: float, tipo: TipoMonto
+) -> tuple[str, str, str]:
+    """Calcula (amount_str, subtotal_gravado_str, valor_iva_str) con 2 decimales.
+
+    Datafast/Oppwa exige strings tipo "12.50". Este método garantiza la
+    invariante fiscal que evita el error 100.400.500:
+        amount == subtotal_iva0 + subtotal_gravado + valor_iva + valor_ice
+
+    Args:
+        monto: El valor exacto dado por el usuario (en USD).
+        tipo:  TipoMonto.SUBTOTAL      → monto es la base sin IVA.
+               TipoMonto.TOTAL_CON_IVA → monto es el total ya con IVA.
+
+    Returns:
+        (amount_str, subtotal_gravado_str, valor_iva_str) — strings "0.00".
+
+    Ejemplos:
+        _calcular_strings_fiscales(30.0, SUBTOTAL)
+            → ("34.50", "30.00", "4.50")
+        _calcular_strings_fiscales(30.0, TOTAL_CON_IVA)
+            → ("30.00", "26.09", "3.91")
+    """
+    if monto <= 0:
+        raise ValueError(f"monto debe ser > 0. Recibido: {monto}")
+    rate = _iva_rate()
+    d = Decimal(str(monto))
+
+    if tipo == TipoMonto.TOTAL_CON_IVA:
+        total    = _r2(d)
+        subtotal = _r2(d / (1 + rate))
+        iva      = _r2(total - subtotal)
+    else:  # SUBTOTAL
+        subtotal = _r2(d)
+        iva      = _r2(d * rate)
+        total    = _r2(subtotal + iva)
+
+    return str(total), str(subtotal), str(iva)
+
+
+# ---------------------------------------------------------------------------
 
 
 # ---------------------------------------------------------------------------
@@ -64,14 +147,17 @@ mcp = FastMCP(
         "  1. Call crear_checkout → get checkoutId. "
         "  2. Frontend renders the Datafast widget using that checkoutId. "
         "  3. Call verificar_pago_checkout → confirm the result. "
-        "CRITICAL RULES: "
-        "  · amount must equal exactly: subtotal_iva0 + subtotal_gravado + valor_iva + valor_ice. "
-        "    Mismatch causes error 100.400.500. "
-        "  · All monetary amounts are strings with 2 decimal places. Example: '12.50'. "
+        "MONETARY INPUT RULES (agent must follow strictly): "
+        "  · Pass `monto` (float) with the EXACT number the user stated. "
+        "  · Pass `tipo_monto`='subtotal' if the amount is WITHOUT IVA (default). "
+        "  · Pass `tipo_monto`='total_con_iva' if the amount ALREADY INCLUDES IVA. "
+        "  · NEVER calculate subtotals, IVA, or string-format amounts yourself. "
+        "  · The server computes subtotal_gravado, valor_iva, and amount from monto+tipo_monto. "
         "  · Approved result codes: 000.000.000 or 000.100.112. "
         "  · paymentType: DB=Direct debit/purchase, PA=Pre-authorization, "
         "    RV=Reversal (same-day void), RF=Refund (post-day). "
-        "  · Set DATAFAST_BASE_URL=https://eu-test.oppwa.com for sandbox testing."
+        "  · Set DATAFAST_BASE_URL=https://eu-test.oppwa.com for sandbox testing. "
+        "The IVA rate is read from IVA_EC_PERCENTAGE env var (default 15%)."
     ))
 
 # ---------------------------------------------------------------------------
@@ -176,12 +262,12 @@ def _is_approved(result_code: str) -> bool:
 
 
 @mcp.tool()
-async def crear_checkout(    entity_id: str,
-    amount: str,
+async def crear_checkout(
+    entity_id: str,
+    monto: float,
     payment_type: str,
-    subtotal_iva0: str,
-    subtotal_gravado: str,
-    valor_iva: str,
+    tipo_monto: TipoMonto = TipoMonto.SUBTOTAL,
+    subtotal_iva0: str = "0.00",
     valor_ice: str = "0.00",
     currency: str = "USD",
     merchant_transaction_id: str | None = None,
@@ -198,22 +284,28 @@ async def crear_checkout(    entity_id: str,
     The returned checkoutId is passed to the frontend Datafast widget (card form).
     After the customer submits the card form, call verificar_pago_checkout.
 
-    ⚠️ CRITICAL TAX RULE (Ecuador):
-    The 'amount' field MUST equal EXACTLY:
-      subtotal_iva0 + subtotal_gravado + valor_iva + valor_ice
-    If the sum does not match, Datafast returns error code 100.400.500.
+    MONETARY INPUT (agent MUST follow this contract):
+      monto (float): The EXACT amount the user stated — pass it verbatim, no rounding.
+      tipo_monto (enum):
+        · "subtotal"      → monto is the taxable base WITHOUT IVA (default).
+        · "total_con_iva" → monto is the final price ALREADY INCLUDING IVA.
+
+    ⚠️ DO NOT calculate subtotal_gravado, valor_iva, or format amounts as strings yourself.
+       The server computes all fiscal values and guarantees the Oppwa tax invariant:
+       amount == subtotal_iva0 + subtotal_gravado + valor_iva + valor_ice
+       Violation causes Datafast error code 100.400.500.
 
     REQUIRED PARAMETERS:
       entity_id (str): Commerce entity ID issued by Datafast.
                        Note: Datafast may issue different entityIds for Visa/MC vs Diners/Discover.
-      amount (str): ⚠️ TOTAL AMOUNT to charge with 2 decimal places. Example: "12.50"
+      monto (float): Amount exactly as stated by the user. Example: 30.0
       payment_type (str): Payment operation type.
                           Valid values: "DB"=Direct debit/purchase, "PA"=Pre-authorization.
-      subtotal_iva0 (str): ⚠️ ZERO-RATE BASE (Base Cero - SHOPPER_VAL_BASE0). Example: "0.00"
-      subtotal_gravado (str): ⚠️ TAXABLE BASE (Base Imponible / Subtotal 15%). DO NOT confuse with Total. Example: "10.71"
-      valor_iva (str): ⚠️ TOTAL VAT AMOUNT (SHOPPER_VAL_IVA). Example: "1.79"
 
     OPTIONAL PARAMETERS:
+      tipo_monto (str, default="subtotal"): "subtotal" | "total_con_iva".
+      subtotal_iva0 (str, default="0.00"): Zero-rated base (Base Cero). Only set this
+                                           if part of the transaction is VAT-exempt.
       valor_ice (str, default="0.00"): ICE tax amount (SHOPPER_VAL_ICE).
       currency (str, default="USD"): Currency code.
       merchant_transaction_id (str): Your system's order number for reconciliation.
@@ -227,21 +319,34 @@ async def crear_checkout(    entity_id: str,
     RETURNS:
       JSON with 'id' (checkoutId) and 'result.code' (success = "000.200.100").
 
-    EXAMPLE CALL:
-      crear_checkout(bearer_token="tkn...", entity_id="8ac7...",
-                     amount="12.50", payment_type="DB",
-                     subtotal_iva0="0.00", subtotal_gravado="10.71",
-                     valor_iva="1.79")
+    EXAMPLE CALLS:
+      # User says "charge $30 + VAT"
+      crear_checkout(entity_id="8ac7...", monto=30.0, tipo_monto="subtotal",
+                     payment_type="DB")
+
+      # User says "charge $34.50 with VAT included"
+      crear_checkout(entity_id="8ac7...", monto=34.50, tipo_monto="total_con_iva",
+                     payment_type="DB")
     """
+    # ── Cálculo determinista (servidor, no el LLM) ──────────────────────────
+    amount_str, subtotal_gravado_str, valor_iva_str = _calcular_strings_fiscales(
+        monto, tipo_monto
+    )
+
+    logger.info(
+        "[crear_checkout] monto=%.2f tipo=%s → amount=%s subtotal_gravado=%s valor_iva=%s",
+        monto, tipo_monto.value, amount_str, subtotal_gravado_str, valor_iva_str,
+    )
+
     data: dict[str, Any] = {
-        "entityId": entity_id,
-        "amount": amount,
-        "currency": currency,
-        "paymentType": payment_type,
-        "customParameters[SHOPPER_VAL_BASE0]": subtotal_iva0,
-        "customParameters[SHOPPER_VAL_BASEIMP]": subtotal_gravado,
-        "customParameters[SHOPPER_VAL_IVA]": valor_iva,
-        "customParameters[SHOPPER_VAL_ICE]": valor_ice,
+        "entityId":                               entity_id,
+        "amount":                                 amount_str,
+        "currency":                               currency,
+        "paymentType":                            payment_type,
+        "customParameters[SHOPPER_VAL_BASE0]":    subtotal_iva0,
+        "customParameters[SHOPPER_VAL_BASEIMP]": subtotal_gravado_str,
+        "customParameters[SHOPPER_VAL_IVA]":      valor_iva_str,
+        "customParameters[SHOPPER_VAL_ICE]":      valor_ice,
     }
     if merchant_transaction_id is not None:
         data["merchantTransactionId"] = merchant_transaction_id
