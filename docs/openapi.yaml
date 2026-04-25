@@ -1,0 +1,306 @@
+openapi: 3.0.0
+info:
+  title: API Datafast (Dataweb)
+  description: Especificación completa de la API de Datafast Ecuador (ACI Worldwide). ¡ATENCIÓN MCP! Esta API requiere que todas las peticiones POST sean codificadas como 'application/x-www-form-urlencoded'. No envíes JSON en el body de las peticiones POST.
+  version: 1.0.0
+servers:
+  - url: https://eu-prod.oppwa.com
+    description: Servidor de Producción Datafast
+  - url: https://eu-test.oppwa.com
+    description: Servidor de Pruebas (UAT / Sandbox)
+security:
+  - BearerAuth: []
+
+paths:
+  # ==========================================
+  # GENERACIÓN DE CHECKOUT Y STATUS
+  # ==========================================
+  /v1/checkouts:
+    post:
+      summary: Generar Checkout ID
+      description: Prepara una transacción y retorna el checkoutId necesario para el botón de pagos web.
+      operationId: createCheckout
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CheckoutRequest'
+      responses:
+        '200':
+          description: CheckoutId generado correctamente.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CheckoutResponse'
+
+  /v1/checkouts/{id}/payment:
+    get:
+      summary: Verificar Estado de Transacción
+      description: Consulta el estado final de una transacción luego de que el cliente procesó el pago en el frontend.
+      operationId: getPaymentStatus
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: El checkoutId generado previamente.
+          schema:
+            type: string
+        - name: entityId
+          in: query
+          required: true
+          description: Identificador de la entidad/comercio.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Detalles de la transacción.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentStatusResponse'
+
+  /v1/query:
+    get:
+      summary: Verificar por ID de Comercio
+      description: Busca el estado de una transacción basándose en el merchantTransactionId.
+      operationId: queryByMerchantId
+      parameters:
+        - name: entityId
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: merchantTransactionId
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Lista de transacciones encontradas.
+
+  # ==========================================
+  # ANULACIONES Y REEMBOLSOS
+  # ==========================================
+  /v1/payments/{id}:
+    post:
+      summary: Reversar o Reembolsar Transacción
+      description: Realiza un Reversal (RV) o Refund (RF) de un pago procesado.
+      operationId: voidOrRefundPayment
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: El ID real de la transacción (No el checkoutId, sino el ID devuelto en el status del pago exitoso).
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/RefundRequest'
+      responses:
+        '200':
+          description: Reverso o reembolso procesado.
+
+  # ==========================================
+  # PAGOS RECURRENTES Y TOKENS (ONECLICK)
+  # ==========================================
+  /v1/registrations/{id}/payments:
+    post:
+      summary: Realizar Pago Recurrente (OneClick)
+      description: Procesa un cobro automático contra una tarjeta tokenizada.
+      operationId: createRecurringPayment
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: ID de registro (Token de la tarjeta guardada).
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/RecurringPaymentRequest'
+      responses:
+        '200':
+          description: Pago recurrente procesado exitosamente.
+
+  /v1/registrations/{id}:
+    delete:
+      summary: Eliminar Token de Tarjeta
+      description: Elimina de la bóveda de Datafast una tarjeta guardada previamente.
+      operationId: deleteRegistration
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: ID de registro (Token de la tarjeta).
+          schema:
+            type: string
+        - name: entityId
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Registro de tarjeta eliminado exitosamente.
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      description: Token Bearer entregado por Datafast.
+
+  schemas:
+    CheckoutRequest:
+      type: object
+      required: [entityId, amount, currency, paymentType]
+      properties:
+        entityId:
+          type: string
+          description: Identificador del comercio.
+        amount:
+          type: string
+          description: Monto total con decimales (Ej. "12.50").
+        currency:
+          type: string
+          default: "USD"
+        paymentType:
+          type: string
+          enum: ["DB", "PA"]
+          description: DB=Débito/Compra, PA=Pre-autorización.
+        merchantTransactionId:
+          type: string
+          description: Orden de compra en el sistema del comercio.
+        customer.email:
+          type: string
+          format: email
+        customer.givenName:
+          type: string
+        customer.surname:
+          type: string
+        customer.identificationDocType:
+          type: string
+          description: "Ej. IDCARD, PASSPORT"
+        customer.identificationDocId:
+          type: string
+          description: "Número de cédula/pasaporte"
+        billing.street1:
+          type: string
+        customParameters[SHOPPER_VAL_BASE0]:
+          type: string
+          description: Subtotal IVA 0%. Ej. "10.00"
+        customParameters[SHOPPER_VAL_BASEIMP]:
+          type: string
+          description: Subtotal Gravado (IVA 12/15%). Ej. "2.00"
+        customParameters[SHOPPER_VAL_IVA]:
+          type: string
+          description: Valor del IVA. Ej. "0.30"
+        customParameters[SHOPPER_VAL_ICE]:
+          type: string
+          description: Valor del ICE. Ej. "0.00"
+        createRegistration:
+          type: boolean
+          description: Enviar "true" si se desea tokenizar la tarjeta para pagos futuros.
+
+    RefundRequest:
+      type: object
+      required: [entityId, amount, currency, paymentType]
+      properties:
+        entityId:
+          type: string
+        amount:
+          type: string
+        currency:
+          type: string
+          default: "USD"
+        paymentType:
+          type: string
+          enum: ["RV", "RF"]
+          description: RV=Reversal (Mismo día, anula transacción), RF=Refund (Reembolso de días anteriores).
+
+    RecurringPaymentRequest:
+      type: object
+      required: [entityId, amount, currency, paymentType]
+      properties:
+        entityId:
+          type: string
+        amount:
+          type: string
+        currency:
+          type: string
+          default: "USD"
+        paymentType:
+          type: string
+          default: "DB"
+        shopperResultUrl:
+          type: string
+          format: uri
+          description: Obligatorio si el pago requiere un desafío 3D Secure (3DS).
+
+    CheckoutResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          description: CheckoutId que se usará en el script del frontend.
+        result:
+          $ref: '#/components/schemas/ResultObject'
+
+    PaymentStatusResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Payment ID real.
+        merchantTransactionId:
+          type: string
+        amount:
+          type: string
+        currency:
+          type: string
+        paymentType:
+          type: string
+        result:
+          $ref: '#/components/schemas/ResultObject'
+        resultDetails:
+          type: object
+          properties:
+            AuthCode:
+              type: string
+            ReferenceNbr:
+              type: string
+            clearingInstituteName:
+              type: string
+        card:
+          type: object
+          properties:
+            bin:
+              type: string
+            last4Digits:
+              type: string
+            holder:
+              type: string
+            expiryMonth:
+              type: string
+            expiryYear:
+              type: string
+        registrationId:
+          type: string
+          description: Si se solicitó guardar la tarjeta, aquí se devuelve el token.
+
+    ResultObject:
+      type: object
+      properties:
+        code:
+          type: string
+          description: Código del resultado (Ej. 000.100.112).
+        description:
+          type: string
