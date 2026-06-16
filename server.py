@@ -38,6 +38,9 @@ from dotenv import load_dotenv
 import httpx
 from mcp.server.fastmcp import FastMCP
 
+from mcp_common.security import validate_safe_url, validate_amount
+from mcp_common.logging_filter import install as install_logging_filter
+
 load_dotenv()
 
 
@@ -131,6 +134,7 @@ logging.basicConfig(
     format='{"time":"%(asctime)s", "level":"%(levelname)s", "name":"%(name)s", "message":"%(message)s"}',
 )
 logger = logging.getLogger("datafast-mcp")
+install_logging_filter()
 
 # Producción: https://eu-prod.oppwa.com  |  Sandbox: https://eu-test.oppwa.com
 DATAFAST_BASE_URL = os.environ.get("DATAFAST_BASE_URL", "https://eu-prod.oppwa.com")
@@ -477,6 +481,11 @@ async def reversar_reembolsar_pago(    entity_id: str,
                                payment_id="8ac7a4a2123456789abc",
                                amount="12.50", payment_type="RF")
     """
+    try:
+        amount_float = float(amount)
+        validate_amount(amount_float, "amount")
+    except ValueError as exc:
+        raise ValueError(f"amount debe ser un string numérico válido: {exc}") from exc
     data: dict[str, Any] = {
         "entityId": entity_id,
         "amount": amount,
@@ -524,6 +533,14 @@ async def pago_recurrente_oneclick(    entity_id: str,
       pago_recurrente_oneclick(entity_id="8ac7...",
                                registration_id="8ac7a4a2-abcd", amount="99.00")
     """
+    try:
+        amount_float = float(amount)
+        validate_amount(amount_float, "amount")
+    except ValueError as exc:
+        raise ValueError(f"amount debe ser un string numérico válido: {exc}") from exc
+    if shopper_result_url is not None:
+        # Anti-SSRF: bloquea metadata IPs, loopback, private ranges, http://
+        shopper_result_url = validate_safe_url(shopper_result_url, "shopper_result_url")
     data: dict[str, Any] = {
         "entityId": entity_id,
         "amount": amount,
