@@ -9,9 +9,10 @@ a través del gateway Datafast Ecuador (motor ACI Worldwide / Oppwa).
     NO JSON. Este servidor maneja ese detalle internamente.
 
 MULTI-ACCOUNT SUPPORT (v2.0):
-  Cada tool acepta `bearer_token` y (cuando aplica) `entity_id` como
-  parámetros explícitos. Esto permite al agente operar en diferentes
-  cuentas de comercio sin cambiar variables de entorno.
+  Cada tool acepta `entity_id` como parámetro explícito. El bearer token
+  se lee de la variable de entorno DATAFAST_BEARER_TOKEN. Esto permite al
+  agente operar en diferentes cuentas de comercio pasando entity_id por
+  llamada.
 
 Flujo estándar:
   1. crear_checkout  →  obtiene checkoutId
@@ -143,6 +144,7 @@ mcp = FastMCP(
         "Supports card payments via hosted checkout widget, recurring charges with tokenized "
         "cards, reversals, refunds and payment status queries. "
         "bearer_token is loaded from DATAFAST_BEARER_TOKEN env var. Pass `entity_id` per call. "
+        "DO NOT pass bearer_token as a function argument — it is not in the signature. "
         "STANDARD FLOW: "
         "  1. Call crear_checkout → get checkoutId. "
         "  2. Frontend renders the Datafast widget using that checkoutId. "
@@ -391,7 +393,7 @@ async def verificar_pago_checkout(    entity_id: str,
         - resultDetails.ReferenceNbr: Bank reference number.
 
     EXAMPLE CALL:
-      verificar_pago_checkout(bearer_token="tkn...", entity_id="8ac7...",
+      verificar_pago_checkout(entity_id="8ac7...",
                               checkout_id="1ABC23DEF456GH78")
     """
     result = await _get(
@@ -423,7 +425,7 @@ async def consultar_pago_por_orden(    entity_id: str,
       amount, id, and payment details.
 
     EXAMPLE CALL:
-      consultar_pago_por_orden(bearer_token="tkn...", entity_id="8ac7...",
+      consultar_pago_por_orden(entity_id="8ac7...",
                                merchant_transaction_id="ORDER-2025-0042")
     """
     result = await _get(
@@ -471,7 +473,7 @@ async def reversar_reembolsar_pago(    entity_id: str,
       JSON with result.code and refund/reversal confirmation details.
 
     EXAMPLE CALL:
-      reversar_reembolsar_pago(bearer_token="tkn...", entity_id="8ac7...",
+      reversar_reembolsar_pago(entity_id="8ac7...",
                                payment_id="8ac7a4a2123456789abc",
                                amount="12.50", payment_type="RF")
     """
@@ -519,7 +521,7 @@ async def pago_recurrente_oneclick(    entity_id: str,
       authorizationCode, and card details.
 
     EXAMPLE CALL:
-      pago_recurrente_oneclick(bearer_token="tkn...", entity_id="8ac7...",
+      pago_recurrente_oneclick(entity_id="8ac7...",
                                registration_id="8ac7a4a2-abcd", amount="99.00")
     """
     data: dict[str, Any] = {
@@ -553,7 +555,7 @@ async def eliminar_token_tarjeta(    entity_id: str,
       JSON confirmation of the deletion.
 
     EXAMPLE CALL:
-      eliminar_token_tarjeta(bearer_token="tkn...", entity_id="8ac7...",
+      eliminar_token_tarjeta(entity_id="8ac7...",
                              registration_id="8ac7a4a2-abcd-1234-efgh-5678")
     """
     result = await _delete_form(
