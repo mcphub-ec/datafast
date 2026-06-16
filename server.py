@@ -142,7 +142,7 @@ HTTP_TIMEOUT = float(os.environ.get("DATAFAST_HTTP_TIMEOUT", "30"))
 
 mcp = FastMCP(
     "datafast",
-    host=os.getenv("MCP_HOST", "0.0.0.0"),
+    host=os.getenv("MCP_HOST", "0.0.0.0"),  # nosec B104 — configurable via MCP_HOST env
     instructions=(
         "MCP server for Datafast Ecuador payment gateway (ACI Worldwide / Oppwa engine). "
         "Supports card payments via hosted checkout widget, recurring charges with tokenized "
@@ -675,4 +675,4 @@ if __name__ == "__main__":
         app = mcp.streamable_http_app()
     else:
         raise ValueError(f"Unknown transport mode: {transport_mode}")
-    uvicorn.run(app, host=os.getenv("MCP_HOST", "0.0.0.0"), port=port)
+    uvicorn.run(app, host=os.getenv("MCP_HOST", "0.0.0.0"), port=port)  # nosec B104 — configurable via MCP_HOST env
